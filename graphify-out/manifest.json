@@ -1,0 +1,152 @@
+{
+  "app/__init__.py": {
+    "mtime": 1794793878.9829817,
+    "seen": 1794794024.3813176,
+    "ast_hash": "b5068c365fd9068eaac815a412983aac",
+    "semantic_hash": ""
+  },
+  "app/config.py": {
+    "mtime": 1794735680.370715,
+    "seen": 1794735694.3169966,
+    "ast_hash": "9f14039a4aa7e24e6d1975b825c4c648",
+    "semantic_hash": ""
+  },
+  "app/db.py": {
+    "mtime": 1794793422.077177,
+    "seen": 1794794024.3813176,
+    "ast_hash": "3f6c6468a98fe7df7a4298e9e42e11d1",
+    "semantic_hash": ""
+  },
+  "app/models.py": {
+    "mtime": 1794793412.2347798,
+    "seen": 1794794024.3813176,
+    "ast_hash": "52089a27a51ca5f92e77f09cc9746197",
+    "semantic_hash": ""
+  },
+  "app/services/__init__.py": {
+    "mtime": 1794733788.9911654,
+    "seen": 1794734348.9801092,
+    "ast_hash": "d41d8cd98f00b204e9800998ecf8427e",
+    "semantic_hash": "d41d8cd98f00b204e9800998ecf8427e"
+  },
+  "app/services/invoice_builder.py": {
+    "mtime": 1794793886.2652571,
+    "seen": 1794794024.3813176,
+    "ast_hash": "5901bd20d9a4f2106e27289bf51fe94e",
+    "semantic_hash": ""
+  },
+  "app/services/invoice_export.py": {
+    "mtime": 1794793486.483362,
+    "seen": 1794794024.3813176,
+    "ast_hash": "eaa10f64ea3eab2342e41ae61469b77d",
+    "semantic_hash": ""
+  },
+  "app/services/rab_parser.py": {
+    "mtime": 1794793808.9183881,
+    "seen": 1794794024.3813176,
+    "ast_hash": "6dc1a2ec78ca3806db5573908fffdc2d",
+    "semantic_hash": ""
+  },
+  "app/services/validation.py": {
+    "mtime": 1794793491.6819212,
+    "seen": 1794794024.3813176,
+    "ast_hash": "e8befc831eccaecab28c3420be1113c3",
+    "semantic_hash": ""
+  },
+  "app/ui/__init__.py": {
+    "mtime": 1794733788.9946878,
+    "seen": 1794734348.9801092,
+    "ast_hash": "d41d8cd98f00b204e9800998ecf8427e",
+    "semantic_hash": "d41d8cd98f00b204e9800998ecf8427e"
+  },
+  "app/ui/dialogs_misc.py": {
+    "mtime": 1794793561.453415,
+    "seen": 1794794024.3813176,
+    "ast_hash": "145e88a304da9727845c130363a899be",
+    "semantic_hash": ""
+  },
+  "app/ui/dialogs_rab.py": {
+    "mtime": 1794794133.4026656,
+    "seen": 1794794166.0796888,
+    "ast_hash": "f0e1c7d080946cb16dacd07b80d2bf87",
+    "semantic_hash": ""
+  },
+  "app/ui/main_window.py": {
+    "mtime": 1794793886.2642481,
+    "seen": 1794794024.3813176,
+    "ast_hash": "578727c424604f872ef571912e78f09c",
+    "semantic_hash": ""
+  },
+  "app/ui/project_tab.py": {
+    "mtime": 1794793936.226372,
+    "seen": 1794794024.3813176,
+    "ast_hash": "395bb22dd64c47643dc431e15a1eb64d",
+    "semantic_hash": ""
+  },
+  "app/ui/style.py": {
+    "mtime": 1794733788.998696,
+    "seen": 1794734348.9801092,
+    "ast_hash": "c6742ad93e66413cca5cbcae5c2843d6",
+    "semantic_hash": "c6742ad93e66413cca5cbcae5c2843d6"
+  },
+  "app/ui/widgets.py": {
+    "mtime": 1794733788.998696,
+    "seen": 1794734348.9801092,
+    "ast_hash": "89f3e0e00f4573a0dba826d4f81a3656",
+    "semantic_hash": "89f3e0e00f4573a0dba826d4f81a3656"
+  },
+  "app/utils.py": {
+    "mtime": 1794733788.9996972,
+    "seen": 1794734348.9801092,
+    "ast_hash": "4d624f41350511f573ef326bdb3da5cf",
+    "semantic_hash": "4d624f41350511f573ef326bdb3da5cf"
+  },
+  "main.py": {
+    "mtime": 1794737393.9057803,
+    "seen": 1794737419.4100432,
+    "ast_hash": "e47a11e2403725ca5465328e015c9511",
+    "semantic_hash": ""
+  },
+  "tests/test_core.py": {
+    "mtime": 1794794100.4797933,
+    "seen": 1794794166.0796888,
+    "ast_hash": "43999edb9a6cd4dfb10a13f97ad1a571",
+    "semantic_hash": ""
+  },
+  "tools/make_samples.py": {
+    "mtime": 1794794070.0050986,
+    "seen": 1794794166.0796888,
+    "ast_hash": "fb7e8dcff69ae8a23f6189e43d685ca8",
+    "semantic_hash": ""
+  },
+  "README.md": {
+    "mtime": 1794793738.6181152,
+    "seen": 1794794024.3813176,
+    "ast_hash": "021e97319c7fafd3bbcc3be8bd7537a7",
+    "semantic_hash": ""
+  },
+  "requirements.txt": {
+    "mtime": 1794733789.0016994,
+    "seen": 1794734348.9801092,
+    "ast_hash": "6f352d83b10fe6dacc1861117f55874b",
+    "semantic_hash": "6f352d83b10fe6dacc1861117f55874b"
+  },
+  "app/services/template_profile.py": {
+    "mtime": 1794735644.765401,
+    "seen": 1794735694.3169966,
+    "ast_hash": "922ddd5657335aaeb8acf8aafd1a90de",
+    "semantic_hash": ""
+  },
+  "docs/PLAN-UNIVERSAL-INVOICE-MAKER.md": {
+    "mtime": 1794794109.6767404,
+    "seen": 1794794166.0796888,
+    "ast_hash": "ea5028f41310dca55738da08af85b3b0",
+    "semantic_hash": ""
+  },
+  "app/ui/invoice_tab.py": {
+    "mtime": 1794793886.2988868,
+    "seen": 1794794024.3813176,
+    "ast_hash": "9dd2eb3f3281f2f2bad32534da19526a",
+    "semantic_hash": ""
+  }
+}

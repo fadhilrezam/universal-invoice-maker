@@ -13,7 +13,7 @@ from pathlib import Path
 import openpyxl
 from openpyxl.utils import get_column_letter
 
-from ..models import ParsedGroup, ParsedItem
+from ..models import ParsedItem
 
 ROLE_IGNORE = "ignore"
 ROLE_NAME = "name"
@@ -40,7 +40,7 @@ ROMAN_RE = re.compile(r"^[ivxlcdm]+$", re.IGNORECASE)
 ROMAN_MAP = {"i": 1, "v": 5, "x": 10, "l": 50, "c": 100, "d": 500, "m": 1000}
 
 NAME_KEYS = ("nama barang", "uraian", "deskripsi", "pekerjaan", "item", "barang")
-UNIT_KEYS = ("satuan", "unit", "uom")
+UNIT_KEYS = ("satuan", "sat.", "unit", "uom")
 PRICE_KEYS = ("harga satuan", "harga", "unit price", "harga unit")
 QTY_KEYS = ("qty", "quantity", "volume", "jumlah", "banyak")
 AMOUNT_KEYS = (
@@ -79,7 +79,6 @@ class RabMapping:
     sheet: str
     header_row: int
     columns: list[MappedColumn]
-    single_term_name: str = "Termin 1"
 
     def by_role(self, role: str) -> list[MappedColumn]:
         return [c for c in self.columns if c.role == role]
@@ -106,31 +105,19 @@ class RabMapping:
         ):
             if len(self.by_role(role)) > 1:
                 return f"Kolom {label} hanya boleh dipilih satu."
-        names = [c.term_name.strip() for c in self.terms()]
-        if any(not n for n in names):
-            return "Nama termin tidak boleh kosong."
-        if len(names) != len(set(names)):
-            return "Nama termin tidak boleh sama."
         return None
 
 
 @dataclass
 class ParseResult:
-    groups: list[ParsedGroup] = field(default_factory=list)
+    """Hasil parsing RAB: daftar item datar, tanpa pengelompokan kendaraan."""
+
+    items: list[ParsedItem] = field(default_factory=list)
+    # Hanya informasi: kolom termin dikenali tetapi tidak dipakai untuk invoice.
     term_names: list[str] = field(default_factory=list)
     issues: list[str] = field(default_factory=list)
     decimal_rows: list[int] = field(default_factory=list)
     skipped_rows: list[int] = field(default_factory=list)
-
-    @property
-    def items(self) -> list[ParsedItem]:
-        return [item for group in self.groups for item in group.items]
-
-    @property
-    def is_grouped(self) -> bool:
-        return len(self.groups) > 1 or (
-            bool(self.groups) and self.groups[0].unit_count > 0
-        )
 
 
 def normalize_header(text) -> str:
@@ -262,11 +249,14 @@ def detect_grouped_columns(
         _parent_header_text(ws, header_row, col)
         for col in range(1, max_col + 1)
     ]
-    if not any(text == "satuan" for text in base_texts):
+    # Kolom satuan/volume kadang hanya ada di baris atas (merge vertikal),
+    # jadi kedua baris ikut diperiksa.
+    all_texts = base_texts + [normalize_header(parent) for parent in parents]
+    if not any(text.startswith("sat") or "satuan" in text for text in all_texts):
         return None
-    if not any("harga satuan" in text for text in base_texts):
+    if not any("harga satuan" in text for text in all_texts):
         return None
-    if not any("volume" in text or "qty" in text for text in base_texts):
+    if not any("volume" in text or "qty" in text for text in all_texts):
         return None
     if not any(term_label_from_header(parent) for parent in parents):
         return None
@@ -393,8 +383,62 @@ def _formula_without_cache(values_wb, formula_wb, sheet: str, row: int, col: int
     return value is None and isinstance(formula, str) and formula.startswith("=")
 
 
+PO_LABEL_PREFIXES = (
+    "no. po",
+    "no po",
+    "nomor po",
+    "nomer po",
+    "no. pesanan",
+    "no pesanan",
+    "nomor pesanan",
+    "purchase order",
+    "p.o.",
+    "po",
+)
+
+
+def detect_po_number(ws, header_row: int, max_scan: int = 40) -> str:
+    """Cari nomor PO di area atas tabel RAB.
+
+    Label yang dikenali: ``No PO``, ``Nomor PO``, ``P.O.``, ``Purchase Order``.
+    Nilai diambil dari teks setelah titik dua, atau sel pertama di sebelah
+    kanan label. Mengembalikan string kosong bila tidak ada.
+    """
+    limit = min(max(0, header_row - 1), max_scan)
+    max_col = min(ws.max_column or 0, 20)
+    for row in range(1, limit + 1):
+        for col in range(1, max_col + 1):
+            raw = ws.cell(row=row, column=col).value
+            text = str(raw or "").strip()
+            if not text:
+                continue
+            lowered = re.sub(r"\s+", " ", text.lower())
+            matched = None
+            for prefix in PO_LABEL_PREFIXES:
+                if not lowered.startswith(prefix):
+                    continue
+                rest = lowered[len(prefix):]
+                # Hindari salah tangkap kata lain (mis. "potongan", "pompa").
+                if rest and rest[0].isalnum():
+                    continue
+                matched = prefix
+                break
+            if not matched:
+                continue
+            remainder = text[len(matched):].lstrip()
+            if remainder.startswith((":", "-", "=")):
+                remainder = remainder[1:].strip()
+            if remainder:
+                return remainder
+            for next_col in range(col + 1, min(max_col, col + 6) + 1):
+                value = str(ws.cell(row=row, column=next_col).value or "").strip()
+                if value:
+                    return value
+    return ""
+
+
 def match_section_header(text: str) -> tuple[str, int] | None:
-    """Kenali penanda blok jenis kendaraan, mis. ``YAMAHA VIXION (3 Unit)``."""
+    """Kenali penanda blok/bagian, mis. ``PEKERJAAN PERSIAPAN (3 Unit)``."""
     raw = (text or "").strip()
     if not raw or SUMMARY_RE.match(raw):
         return None
@@ -411,8 +455,6 @@ def match_section_header(text: str) -> tuple[str, int] | None:
 def parse_rab(
     path: str | Path,
     mapping: RabMapping,
-    *,
-    single_term_name: str = "Termin 1",
 ) -> ParseResult:
     path = str(path)
     try:
@@ -435,43 +477,16 @@ def parse_rab(
         raise RabParseError("Kolom Nama Barang dan Harga Satuan wajib dipilih.")
 
     if term_cols:
-        term_names = [c.term_name.strip() for c in term_cols]
+        term_names = [
+            (c.term_name.strip() or f"Termin {index}")
+            for index, c in enumerate(term_cols, start=1)
+        ]
     else:
-        term_names = [single_term_name.strip() or "Termin 1"]
-    # Pastikan unik
-    seen: dict[str, int] = {}
-    unique_names: list[str] = []
-    for name in term_names:
-        count = seen.get(name, 0) + 1
-        seen[name] = count
-        unique_names.append(name if count == 1 else f"{name} ({count})")
-    term_names = unique_names
+        term_names = []
 
     result = ParseResult(term_names=term_names)
     formula_warned: set[tuple[int, int]] = set()
     last_data_row = ws.max_row or mapping.header_row
-
-    current_group: ParsedGroup | None = None
-    group_names: dict[str, int] = {}
-
-    def ensure_group(name: str = "", count: int = 0, source_row: int = 0) -> None:
-        nonlocal current_group
-        label = (name or "").strip()
-        if label:
-            seen_count = group_names.get(label.casefold(), 0) + 1
-            group_names[label.casefold()] = seen_count
-            if seen_count > 1:
-                result.issues.append(
-                    f"Jenis kendaraan '{label}' muncul lebih dari sekali; "
-                    f"blok ke-{seen_count} diberi nama '{label} ({seen_count})'."
-                )
-                label = f"{label} ({seen_count})"
-        current_group = ParsedGroup(
-            name=label,
-            unit_count=max(0, int(count)),
-            source_row=source_row,
-        )
-        result.groups.append(current_group)
 
     def row_has_numeric(row: int) -> bool:
         columns = ([price_col] if price_col else []) + (
@@ -490,7 +505,9 @@ def parse_rab(
 
         section = match_section_header(name)
         if section is not None and not row_has_numeric(row):
-            ensure_group(section[0], section[1], row)
+            # Baris penanda blok (mis. "PEKERJAAN PERSIAPAN (3 Unit)") hanya
+            # dilewati; aplikasi memetakan RAB apa adanya tanpa pengelompokan.
+            result.skipped_rows.append(row)
             continue
 
         if SUMMARY_RE.match(name) or re.fullmatch(r"[\d\s.,%-]+", name):
@@ -531,14 +548,7 @@ def parse_rab(
             result.skipped_rows.append(row)
             continue
 
-        if current_group is None:
-            ensure_group("", 0, row)
-
-        item_label = (
-            f"{current_group.name} / {name}"
-            if current_group is not None and current_group.name
-            else name
-        )
+        item_label = name
 
         # Formula yang belum punya nilai tersimpan
         for mapped in ([price_col] + term_cols + ([total_col] if total_col else [])):
@@ -576,8 +586,8 @@ def parse_rab(
                 f"sama dengan qty RAB ({total_value:g})."
             )
 
-        assert current_group is not None
-        current_group.items.append(
+        assert total_value is not None
+        result.items.append(
             ParsedItem(
                 name=name,
                 unit=unit,
@@ -587,7 +597,6 @@ def parse_rab(
                     )
                 ),
                 total_qty=_round_qty(total_value),
-                term_qty=[_round_qty(v) for v in term_values],
                 source_row=row,
             )
         )

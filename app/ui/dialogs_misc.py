@@ -1,4 +1,4 @@
-"""Dialog kendaraan, pengaturan, riwayat, dan panduan."""
+"""Dialog pengaturan, riwayat, dan panduan."""
 from __future__ import annotations
 
 import os
@@ -6,7 +6,6 @@ import shutil
 from pathlib import Path
 
 import openpyxl
-from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QDialog,
     QFileDialog,
@@ -27,126 +26,8 @@ from PySide6.QtWidgets import (
 from ..config import bundled_template_path, db_path, default_template_path
 from ..db import Database
 from ..models import Project
-from ..services.vehicle_parser import VehicleParseResult
-from ..utils import parse_date_text
-from .widgets import Banner, button, muted, setup_table
-
-
-class VehicleDialog(QDialog):
-    def __init__(
-        self,
-        parent: QWidget | None = None,
-        plate: str = "",
-        vehicle_type: str = "",
-        title: str = "Tambah Kendaraan",
-        allow_blank: bool = False,
-    ):
-        super().__init__(parent)
-        self.setWindowTitle(title)
-        self.setMinimumWidth(420)
-        self.plate = ""
-        self.vehicle_type = ""
-        self.allow_blank = allow_blank
-
-        root = QVBoxLayout(self)
-        root.setContentsMargins(16, 16, 16, 14)
-        root.setSpacing(12)
-        form = QFormLayout()
-        form.setSpacing(10)
-        self.plate_edit = QLineEdit(plate)
-        self.plate_edit.setPlaceholderText("mis. D 1001 ABC (boleh dikosongkan)")
-        self.type_edit = QLineEdit(vehicle_type)
-        self.type_edit.setReadOnly(True)
-        form.addRow("No Kendaraan", self.plate_edit)
-        form.addRow("Jenis Kendaraan", self.type_edit)
-        root.addLayout(form)
-        if allow_blank:
-            hint = muted("Plat boleh dikosongkan dulu; isi nanti lewat tabel.")
-            hint.setWordWrap(True)
-            root.addWidget(hint)
-
-        row = QHBoxLayout()
-        row.addStretch(1)
-        cancel = QPushButton("Batal")
-        cancel.clicked.connect(self.reject)
-        row.addWidget(cancel)
-        save = button("Simpan", primary=True)
-        save.clicked.connect(self._accept)
-        row.addWidget(save)
-        root.addLayout(row)
-        self.plate_edit.setFocus()
-
-    def _accept(self) -> None:
-        plate = self.plate_edit.text().strip()
-        if not plate and not self.allow_blank:
-            QMessageBox.warning(self, "Belum lengkap", "Nomor kendaraan wajib diisi.")
-            return
-        self.plate = plate
-        self.vehicle_type = self.type_edit.text().strip()
-        super().accept()
-
-
-class VehicleImportDialog(QDialog):
-    def __init__(
-        self,
-        result: VehicleParseResult,
-        parent: QWidget | None = None,
-    ):
-        super().__init__(parent)
-        self.setWindowTitle("Preview Import Kendaraan")
-        self.resize(680, 520)
-        self.result = result
-
-        root = QVBoxLayout(self)
-        root.setContentsMargins(16, 16, 16, 14)
-        root.setSpacing(10)
-        title = QLabel("Daftar kendaraan terbaca")
-        title.setStyleSheet("font-size: 14pt; font-weight: 600; color: #1F2937;")
-        root.addWidget(title)
-        root.addWidget(
-            Banner(
-                f"{len(result.vehicles)} kendaraan dari sheet '{result.sheet}'.",
-                self,
-            )
-        )
-        if result.issues:
-            root.addWidget(
-                Banner("\n".join(result.issues), self)
-            )
-
-        table = QTableWidget()
-        table.setColumnCount(3)
-        table.setHorizontalHeaderLabels(["No", "No Kendaraan", "Tipe Kendaraan"])
-        setup_table(table, read_only=True, row_height=28)
-        table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Fixed)
-        table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
-        table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
-        table.setColumnWidth(0, 50)
-        table.setRowCount(len(result.vehicles))
-        for row, (plate, vehicle_type) in enumerate(result.vehicles):
-            no = QTableWidgetItem(str(row + 1))
-            no.setTextAlignment(Qt.AlignCenter)
-            table.setItem(row, 0, no)
-            table.setItem(row, 1, QTableWidgetItem(plate))
-            table.setItem(row, 2, QTableWidgetItem(vehicle_type))
-        root.addWidget(table, 1)
-
-        note = muted(
-            "Import ini akan mengisi ulang plat ke slot unit yang sudah ada. "
-            "Jenis kendaraan dicocokkan berdasarkan nama; alokasi qty tidak dihapus."
-        )
-        note.setWordWrap(True)
-        root.addWidget(note)
-
-        row = QHBoxLayout()
-        row.addStretch(1)
-        cancel = QPushButton("Batal")
-        cancel.clicked.connect(self.reject)
-        row.addWidget(cancel)
-        accept = button("Isi Plat Kendaraan", primary=True)
-        accept.clicked.connect(self.accept)
-        row.addWidget(accept)
-        root.addLayout(row)
+from ..services.template_profile import detect_header_row
+from .widgets import button, muted, setup_table
 
 
 class SettingsDialog(QDialog):
@@ -197,9 +78,9 @@ class SettingsDialog(QDialog):
         root.addLayout(form)
 
         hint = muted(
-            "Template invoice harus punya header 'Qty' dan 'Nama Barang' di baris 10. "
-            "Kolom A-D dipakai untuk tabel item. Baris total dan footer akan digeser "
-            "otomatis sesuai jumlah item."
+            "Template invoice harus punya header 'Qty' dan 'Nama Barang' di baris "
+            "header yang terdeteksi. Kolom A-D dipakai untuk tabel item. Baris total "
+            "dan footer akan digeser otomatis sesuai jumlah item."
         )
         hint.setWordWrap(True)
         root.addWidget(hint)
@@ -255,20 +136,12 @@ class SettingsDialog(QDialog):
         try:
             wb = openpyxl.load_workbook(str(path), read_only=True)
             ws = wb.worksheets[0]
-            ok = (
-                str(ws["A10"].value or "").strip().lower() == "qty"
-                and str(ws["B10"].value or "").strip().lower() == "nama barang"
-            )
+            header_row = detect_header_row(ws)
             wb.close()
+            if header_row is None:
+                raise ValueError("Header tabel tidak ditemukan")
         except Exception as exc:  # noqa: BLE001
             QMessageBox.warning(self, "Template tidak valid", f"Gagal membaca template: {exc}")
-            return
-        if not ok:
-            QMessageBox.warning(
-                self,
-                "Template tidak valid",
-                "Baris 10 template harus berisi 'Qty' di kolom A dan 'Nama Barang' di kolom B.",
-            )
             return
         self.db.set_setting("company_name", self.company_edit.text().strip())
         self.db.set_setting("company_address", self.address_edit.text().strip())
@@ -318,53 +191,29 @@ class LogDialog(QDialog):
 
 HELP_HTML = """
 <h2>Panduan Singkat</h2>
-<p><b>1. Buat proyek</b> lalu isi data klien, tipe kendaraan default, dan tanggal invoice.
-Tanggal invoice punya dua opsi format: <b>tanggal lengkap</b> (mis. "1 Juli 2026")
-atau <b>bulan dan tahun</b> (mis. "Juli 2026"). Format default diatur di proyek dan
-bisa ditimpa per termin di dialog <b>Kelola Termin</b> (pilihan "Ikuti proyek" memakai
-format default proyek).</p>
-<p><b>2. Import RAB</b> dari Excel. Aplikasi mendeteksi header otomatis; koreksi pemetaan
-kolom bila perlu. RAB boleh berisi banyak jenis kendaraan dengan penanda
-<code>NAMA JENIS (N Unit)</code>. Kolom yang dikenali:</p>
+<p><b>Alur utama:</b> buat proyek → import RAB Excel → export invoice 1:1.</p>
+<p><b>1. Buat proyek</b> lalu isi data klien, Prefix No PO, dan tanggal invoice.
+Tanggal invoice punya dua format: <b>tanggal lengkap</b> (mis. "1 Juli 2026")
+atau <b>bulan dan tahun</b> (mis. "Juli 2026").</p>
+<p><b>2. Import RAB</b> dari Excel. Aplikasi mendeteksi header otomatis; koreksi
+pemetaan kolom bila perlu. Kolom yang dikenali:</p>
 <ul>
   <li><b>Nama Barang</b> — nama item/pekerjaan</li>
   <li><b>Satuan</b> — opsional (unit, pcs, liter, dll.)</li>
   <li><b>Harga Satuan</b> — harga per unit</li>
-  <li><b>Qty Total</b> — qty RAB (opsional jika ada kolom termin)</li>
-  <li><b>Termin</b> — mis. "Termin 1", "Termin 2", "Tahap I"</li>
+  <li><b>Qty Total</b> — volume pada blok "sesuai pelaksanaan"</li>
+  <li><b>Termin</b> — dikenali tetapi <b>diabaikan</b> saat export 1:1</li>
 </ul>
-<p>Jika tidak ada kolom termin, semua qty masuk ke satu term yang namanya bisa diisi
-di dialog import. Setiap jenis kendaraan otomatis mendapat slot unit sebanyak N.</p>
-<p><b>3. Isi plat</b> lewat tabel kendaraan (klik dua kali) atau Import Plat Excel.
-Plat boleh dikosongkan dulu; invoice memakai label <code>JENIS #unit</code>.
-Import plat hanya mengisi ulang plat, tidak menghapus alokasi qty.</p>
-<p><b>3b. Isi Prefix No PO per jenis kendaraan</b> di tabel <b>Prefix No PO per
-Jenis Kendaraan</b>. Cukup sekali untuk setiap jenis; prefix otomatis berlaku untuk
-semua unit pada jenis itu. No PO tiap invoice = prefix + nomor kendaraan (atau label
-<code>JENIS #unit</code> bila plat kosong). Kolom <b>Contoh No PO</b> memperlihatkan
-hasilnya.</p>
-<p><b>4. Alokasi</b>: pilih termin dan jenis kendaraan, klik <b>Bagi Otomatis</b>.
-Proses ini mencakup semua jenis kendaraan pada termin tersebut. Item yang habis dibagi
-langsung terisi. Item dengan sisa akan memunculkan antrean konfirmasi: pilih kendaraan
-yang menerima tambahan 1 unit. Kamu juga bisa mengedit sel qty secara manual.</p>
-<p><b>5. Kunci termin</b> setelah jumlah alokasi tiap item sama dengan qty termin
-di semua jenis kendaraan. Export diblokir jika masih ada selisih.</p>
-<p><b>6. Export invoice</b>: pilih termin dan plat/unit, lalu export. Satu invoice =
-satu plat per termin. Nama sheet invoice = No PO (prefix + plat). Hasil mengikuti
-layout <code>invoice_template.xlsx</code> (header, tabel item, sub total, disc, total,
-footer tanda tangan). Jumlah baris item menyesuaikan otomatis.</p>
-<p>Pilih format <b>Satu workbook, sheet per kendaraan</b> untuk mendapatkan satu file
-Excel berisi banyak sheet: sheet <b>Rekap</b> (di posisi pertama), satu sheet
-<b>Pivot Qty - {Jenis}</b> per jenis kendaraan (pembagian qty barang per termin
-terhadap No PO, dengan filter otomatis berdasarkan Termin), lalu satu sheet per
-kendaraan yang bernama No PO.</p>
-<h3>Aturan pembagian</h3>
-<p>Untuk qty Q dan N kendaraan: dasar = Q // N, sisa R = Q % N. Sebanyak R kendaraan
-mendapat tambahan 1, dipilih user. Saran awal memprioritaskan kendaraan yang paling
-sedikit menerima item tersebut di termin sebelumnya.</p>
+<p>Baris rekap, sub jumlah, PPN, dan grand total tidak dianggap item.</p>
+<p><b>3. Tab Invoice 1:1</b>: tabel menampilkan hasil pemetaan. Satu baris RAB menjadi
+tepat satu baris invoice — tanpa agregasi dan tanpa pemecahan qty. Isi
+<b>Nomor / Label</b> dan <b>No PO</b> (kosongkan untuk otomatis), pilih folder output,
+lalu klik <b>Export Invoice</b>.</p>
+<p>Nilai invoice adalah <b>netto</b>: PPN tidak dihitung aplikasi. Harga dianggap harga
+akhir, sesuai isi RAB.</p>
 <h3>Lokasi data</h3>
-<p>Data tersimpan lokal di <code>%APPDATA%\\InvoiceAutomation\\data.db</code>.
-Template bisa diganti lewat menu Pengaturan.</p>
+<p>Data tersimpan lokal di <code>%APPDATA%\\UniversalInvoiceMaker\\data.db</code>.
+Template invoice bisa diganti lewat menu Pengaturan.</p>
 """
 
 

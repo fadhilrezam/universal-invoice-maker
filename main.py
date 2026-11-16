@@ -1,4 +1,4 @@
-"""Entry point aplikasi Invoice Automation."""
+"""Entry point aplikasi Universal Invoice Maker."""
 from __future__ import annotations
 
 import sys
@@ -36,9 +36,9 @@ def _install_excepthook() -> None:
 
 def main() -> int:
     app = QApplication(sys.argv)
-    app.setApplicationName("Invoice Automation")
+    app.setApplicationName("Universal Invoice Maker")
     app.setApplicationDisplayName(APP_TITLE)
-    app.setOrganizationName("InvoiceAutomation")
+    app.setOrganizationName("UniversalInvoiceMaker")
     app.setStyle("Fusion")
     app.setStyleSheet(APP_STYLESHEET)
     app.setWindowIcon(app_icon())

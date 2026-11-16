@@ -5,9 +5,8 @@ import unittest
 from pathlib import Path
 
 from app.db import Database
-from app.models import ParsedItem
-from app.services import allocation as alloc
-from app.services.invoice_builder import build_invoice_data
+from app.models import ParsedItem, Item
+from app.services.invoice_builder import build_invoice_netto
 from app.services.invoice_export import InvoiceData, InvoiceLine, export_invoices
 from app.services.rab_parser import (
     ROLE_NAME,
@@ -19,42 +18,49 @@ from app.services.rab_parser import (
     MappedColumn,
     _round_qty,
     detect_best_header,
+    detect_po_number,
     parse_rab,
     to_number,
 )
-from app.services.validation import validate_project, validate_term
+from app.services.validation import validate_project
+
 
 ROOT = Path(__file__).resolve().parents[1]
 TEMPLATE = ROOT / "app" / "resources" / "invoice_template.xlsx"
 SAMPLE_RAB = ROOT / "sample" / "rab_sample.xlsx"
-SAMPLE_REAL = ROOT / "sample" / "rab_sample_real.xlsx"
 
 
-class AllocationTests(unittest.TestCase):
-    def test_divisible(self):
-        self.assertEqual(alloc.split_qty(10, 5), (2, 0))
-        self.assertEqual(
-            alloc.allocate_item(10, [1, 2, 3, 4, 5]),
-            {1: 2, 2: 2, 3: 2, 4: 2, 5: 2},
-        )
+def write_multi_section_rab(path: Path) -> Path:
+    """Buat RAB uji dengan penanda blok (2 bagian, 2 termin).
 
-    def test_remainder_suggestion_prefers_least_history(self):
-        vehicles = [1, 2, 3, 4, 5]
-        history = {1: 3, 2: 1, 3: 1, 4: 0, 5: 2}
-        result = alloc.allocate_item(4, vehicles, history=history)
-        self.assertEqual(sum(result.values()), 4)
-        self.assertEqual(result[4], 1)
-        self.assertEqual(result[1], 0)
+    Dibuat di dalam test supaya tidak bergantung pada file contoh milik user
+    (``sample/`` ada di .gitignore dan tidak ikut repo).
+    """
+    import openpyxl
 
-    def test_choice_validation(self):
-        plan = alloc.build_remainder_plan(10, 4, [1, 2, 3, 4, 5], history={4: 0, 1: 2})
-        self.assertEqual(plan.base, 0)
-        self.assertEqual(plan.remainder, 4)
-        self.assertEqual(len(plan.suggested), 4)
-        self.assertIsNotNone(alloc.validate_choice(plan, list(plan.suggested)[:3]))
-        self.assertIsNone(alloc.validate_choice(plan, list(plan.suggested)))
-        result = alloc.allocations_for_choice(plan, list(plan.suggested))
-        self.assertEqual(sum(result.values()), 4)
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Sheet1"
+    ws.append(
+        [
+            "No",
+            "Uraian Pekerjaan",
+            "Satuan",
+            "Harga Satuan",
+            "Jumlah Biaya",
+            "Termin 1 Volume",
+            "Termin 2 Volume",
+        ]
+    )
+    ws.append([None, "YAMAHA VIXION (3 Unit)", None, None, None, None, None])
+    ws.append([1, "Service", "UNIT", 240_000, 1_440_000, 3, 3])
+    ws.append([2, "Oli Mesin", "LITER", 100_000, 600_000, 3, 3])
+    ws.append([None, "SUZUKI HAYATE (2 Unit)", None, None, None, None, None])
+    ws.append([1, "Service", "UNIT", 200_000, 800_000, 2, 2])
+    ws.append([2, "Kampas Rem", "SET", 150_000, 300_000, 1, 1])
+    wb.save(path)
+    wb.close()
+    return path
 
 
 class NumberParsingTests(unittest.TestCase):
@@ -96,7 +102,6 @@ class RabParserTests(unittest.TestCase):
         self.assertEqual(service.name, "Service")
         self.assertEqual(service.unit_price, 240_000)
         self.assertEqual(service.total_qty, 20)
-        self.assertEqual(service.term_qty, [5, 5, 5, 5])
         self.assertEqual(result.issues, [])
 
     def test_manual_mapping_no_term(self):
@@ -114,41 +119,44 @@ class RabParserTests(unittest.TestCase):
             MappedColumn(3, ROLE_PRICE),
             MappedColumn(4, ROLE_TOTAL_QTY),
         ]
-        result = parse_rab(path, RabMapping("Sheet", 1, columns, "Termin 1"))
-        self.assertEqual(result.term_names, ["Termin 1"])
-        self.assertEqual(result.items[0].term_qty, [7])
+        result = parse_rab(path, RabMapping("Sheet", 1, columns))
+        self.assertEqual(result.term_names, [])
         self.assertEqual(result.items[0].total_qty, 7)
 
-    def test_parse_multi_vehicle_rab(self):
+    def test_parse_multi_section_rab(self):
         import openpyxl
 
-        wb = openpyxl.load_workbook(SAMPLE_REAL, data_only=True)
-        row, columns = detect_best_header(wb["Sheet1"])
-        self.assertEqual(row, 2)
-        self.assertEqual(sum(1 for c in columns if c.role == ROLE_TERM), 2)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = write_multi_section_rab(Path(tmp) / "rab_multi.xlsx")
+            wb = openpyxl.load_workbook(path, data_only=True)
+            row, columns = detect_best_header(wb["Sheet1"])
+            self.assertEqual(row, 1)
+            self.assertEqual(sum(1 for c in columns if c.role == ROLE_TERM), 2)
+            wb.close()
 
-        mapping = RabMapping(sheet="Sheet1", header_row=row, columns=columns)
-        result = parse_rab(SAMPLE_REAL, mapping)
+            result = parse_rab(path, RabMapping("Sheet1", row, columns))
         self.assertEqual(result.term_names, ["Termin 1", "Termin 2"])
-        self.assertEqual(len(result.items), 131)
-        self.assertEqual(
-            [(g.name, g.unit_count, len(g.items)) for g in result.groups],
-            [
-                ("YAMAHA VIXION", 3, 18),
-                ("YAMAHA SCORPIO", 8, 22),
-                ("SUZUKI HAYATE", 30, 47),
-                ("KAWASAKI 150 CC", 2, 15),
-                ("KAWASAKI 250 CC", 2, 14),
-                ("YAMAHA NMAX", 5, 15),
-            ],
-        )
+        self.assertEqual(len(result.items), 4)
+        # Items should be flat, no groups
+        self.assertEqual([item.name for item in result.items], ["Service", "Oli Mesin", "Service", "Kampas Rem"])
+        self.assertEqual(result.items[0].total_qty, 6)
         self.assertEqual(result.issues, [])
-        first = result.groups[0].items[0]
-        self.assertEqual(first.name, "Service")
-        self.assertEqual(first.term_qty, [3, 3])
+
+    def test_section_headers_skipped(self):
+        import openpyxl
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = write_multi_section_rab(Path(tmp) / "rab_multi.xlsx")
+            wb = openpyxl.load_workbook(path, data_only=True)
+            row, columns = detect_best_header(wb["Sheet1"])
+            wb.close()
+            result = parse_rab(path, RabMapping("Sheet1", row, columns))
+        # Section header rows ("YAMAHA VIXION (3 Unit)", "SUZUKI HAYATE (2 Unit)") are skipped
+        self.assertEqual(len(result.items), 4)
+        self.assertEqual([item.source_row for item in result.items], [3, 4, 6, 7])
 
 
-class DatabaseAndValidationTests(unittest.TestCase):
+class DatabaseTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.db = Database(Path(self.tmp.name) / "test.db")
@@ -162,29 +170,36 @@ class DatabaseAndValidationTests(unittest.TestCase):
 
     def test_replace_rab_and_validate(self):
         items = [
-            ParsedItem("Service", "unit", 240000, 10, [5, 5], 2),
-            ParsedItem("Oli", "liter", 100000, 6, [3, 3], 3),
+            ParsedItem("Service", "unit", 240000, 10, 2),
+            ParsedItem("Oli", "liter", 100000, 6, 3),
         ]
-        self.db.replace_rab(self.pid, ["Termin 1", "Termin 2"], items)
+        self.db.replace_rab(self.pid, items)
         self.assertEqual(validate_project(self.db, self.pid), [])
         stored = self.db.list_items(self.pid)
         self.assertEqual(len(stored), 2)
-        terms = self.db.list_terms(self.pid)
-        self.assertEqual([t.name for t in terms], ["Termin 1", "Termin 2"])
+        self.assertEqual(stored[0].name, "Service")
+        self.assertEqual(stored[0].total_qty, 10)
 
-    def test_allocation_invariant(self):
-        items = [ParsedItem("Service", "unit", 240000, 5, [2, 3], 2)]
-        self.db.replace_rab(self.pid, ["Termin 1", "Termin 2"], items)
-        self.db.add_vehicle(self.pid, "D 1 A", "Vixion")
-        self.db.add_vehicle(self.pid, "D 2 A", "Vixion")
-        term = self.db.list_terms(self.pid)[0]
-        item = self.db.list_items(self.pid)[0]
-        self.db.set_allocation(term.id, item.id, self.db.list_vehicles(self.pid)[0].id, 1)
-        issues = validate_term(self.db, term)
+    def test_validate_negative_qty(self):
+        items = [ParsedItem("Service", "unit", 240000, -1, 2)]
+        self.db.replace_rab(self.pid, items)
+        issues = validate_project(self.db, self.pid)
         self.assertEqual(len(issues), 1)
-        self.assertIn("Kurang 1", issues[0].message)
-        self.db.set_allocation(term.id, item.id, self.db.list_vehicles(self.pid)[1].id, 1)
-        self.assertEqual(validate_term(self.db, term), [])
+        self.assertIn("Qty harus lebih dari 0", issues[0].message)
+
+    def test_validate_zero_qty(self):
+        items = [ParsedItem("Service", "unit", 240000, 0, 2)]
+        self.db.replace_rab(self.pid, items)
+        issues = validate_project(self.db, self.pid)
+        self.assertEqual(len(issues), 1)
+        self.assertIn("Qty harus lebih dari 0", issues[0].message)
+
+    def test_validate_negative_price(self):
+        items = [ParsedItem("Service", "unit", -50000, 5, 2)]
+        self.db.replace_rab(self.pid, items)
+        issues = validate_project(self.db, self.pid)
+        self.assertEqual(len(issues), 1)
+        self.assertIn("Harga satuan negatif", issues[0].message)
 
     def test_invoice_date_format_options(self):
         import datetime
@@ -204,79 +219,242 @@ class DatabaseAndValidationTests(unittest.TestCase):
         self.assertEqual(project.date_format, "bulan_tahun")
         self.assertEqual(project.date_obj, sample)
 
-        # Termin bisa override format, lalu kembali ikut proyek.
-        term_id = self.db.add_term(
-            self.pid, "Termin 1", invoice_date=sample, date_format="full"
-        )
-        self.assertEqual(self.db.get_term(term_id).date_format, "full")
-        self.db.update_term(term_id, clear_date_format=True)
-        self.assertIsNone(self.db.get_term(term_id).date_format)
-        self.db.update_term(term_id, date_format="bulan_tahun")
-        self.assertEqual(self.db.get_term(term_id).date_format, "bulan_tahun")
-
-    def test_import_multi_vehicle_rab_creates_groups(self):
+    def test_import_flat_rab(self):
         import openpyxl
 
-        wb = openpyxl.load_workbook(SAMPLE_REAL, data_only=True)
-        row, columns = detect_best_header(wb["Sheet1"])
-        result = parse_rab(
-            SAMPLE_REAL, RabMapping("Sheet1", row, columns)
-        )
-        self.db.replace_rab(
-            self.pid, result.term_names, groups=result.groups
-        )
-        types = self.db.list_vehicle_types(self.pid)
-        self.assertEqual(len(types), 6)
-        self.assertEqual([t.unit_count for t in types], [3, 8, 30, 2, 2, 5])
-        vehicles = self.db.list_vehicles(self.pid)
-        self.assertEqual(len(vehicles), 50)
-        self.assertTrue(all(not vehicle.plate for vehicle in vehicles))
-        self.assertEqual(len(self.db.list_items(self.pid)), 131)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = write_multi_section_rab(Path(tmp) / "rab_multi.xlsx")
+            wb = openpyxl.load_workbook(path, data_only=True)
+            row, columns = detect_best_header(wb["Sheet1"])
+            wb.close()
+            result = parse_rab(path, RabMapping("Sheet1", row, columns))
+            self.db.replace_rab(self.pid, result.items)
+        stored = self.db.list_items(self.pid)
+        self.assertEqual(len(stored), 4)
         self.assertEqual(validate_project(self.db, self.pid), [])
+        # Items are flat, no section grouping
+        self.assertEqual(stored[0].name, "Service")
+        self.assertEqual(stored[1].name, "Oli Mesin")
+        self.assertEqual(stored[2].name, "Service")
+        self.assertEqual(stored[3].name, "Kampas Rem")
 
-        vixion = types[0]
-        self.assertEqual(len(self.db.list_items(self.pid, vixion.id)), 18)
-        self.assertEqual(len(self.db.list_vehicles(self.pid, vixion.id)), 3)
-        first = self.db.list_items(self.pid, vixion.id)[0]
-        self.assertEqual(first.type_name, "YAMAHA VIXION")
 
-    def test_po_prefix_per_type_applies_to_all_units(self):
+class PoDetectionTests(unittest.TestCase):
+    """Nomor PO diambil dari area atas tabel RAB bila ada."""
+
+    def _sheet(self, rows):
         import openpyxl
 
-        wb = openpyxl.load_workbook(SAMPLE_REAL, data_only=True)
-        row, columns = detect_best_header(wb["Sheet1"])
-        result = parse_rab(SAMPLE_REAL, RabMapping("Sheet1", row, columns))
-        self.db.replace_rab(self.pid, result.term_names, groups=result.groups)
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        for row in rows:
+            ws.append(row)
+        return wb, ws
 
-        types = self.db.list_vehicle_types(self.pid)
-        self.assertTrue(all(t.po_prefix == "" for t in types))
+    def test_value_in_same_cell(self):
+        wb, ws = self._sheet(
+            [
+                ["RENCANA ANGGARAN BIAYA", None, None],
+                ["No. PO : VXN-2026-001", None, None],
+                ["No", "Uraian Pekerjaan", "Harga Satuan"],
+            ]
+        )
+        self.assertEqual(detect_po_number(ws, 3), "VXN-2026-001")
+        wb.close()
 
-        # Isi prefix sekali untuk satu jenis kendaraan.
-        vixion = types[0]
-        self.db.update_vehicle_type_po_prefix(vixion.id, "VXN-")
+    def test_value_in_next_cell(self):
+        wb, ws = self._sheet(
+            [
+                ["Nomor PO", "PO-777", None],
+                ["No", "Uraian Pekerjaan", "Harga Satuan"],
+            ]
+        )
+        self.assertEqual(detect_po_number(ws, 2), "PO-777")
+        wb.close()
+
+    def test_not_found(self):
+        wb, ws = self._sheet(
+            [
+                ["RAB Perawatan", None],
+                ["No", "Uraian Pekerjaan"],
+            ]
+        )
+        self.assertEqual(detect_po_number(ws, 2), "")
+        wb.close()
+
+    def test_no_false_positive_on_other_words(self):
+        wb, ws = self._sheet(
+            [
+                ["Potongan harga", None],
+                ["Pompa air", None],
+                ["No", "Uraian Pekerjaan"],
+            ]
+        )
+        self.assertEqual(detect_po_number(ws, 3), "")
+        wb.close()
+
+
+class TemplateProfileTests(unittest.TestCase):
+    """Layout template disimpan sebagai data, bukan literal di kode export."""
+
+    def test_detect_header_row_from_bundled_template(self):
+        import openpyxl
+
+        from app.services.template_profile import detect_header_row
+
+        wb = openpyxl.load_workbook(str(TEMPLATE))
+        ws = wb.worksheets[0]
+        self.assertEqual(detect_header_row(ws), 10)
+        wb.close()
+
+    def test_profile_for_template(self):
+        from app.services.template_profile import profile_for_template
+
+        profile = profile_for_template(TEMPLATE)
+        self.assertEqual(profile.header_row, 10)
+        self.assertEqual(profile.item_first_row, 11)
+        self.assertEqual(profile.columns["qty"], 1)
+        self.assertEqual(profile.columns["name"], 2)
+        self.assertEqual(profile.columns["unit_price"], 3)
+        self.assertEqual(profile.columns["amount"], 4)
+
+    def test_profile_roundtrip_and_fingerprint(self):
+        from app.services.template_profile import TemplateProfile
+
+        profile = TemplateProfile(name="Uji")
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "profile.json"
+            profile.save(path)
+            loaded = TemplateProfile.load(path)
+        self.assertEqual(loaded.to_dict(), profile.to_dict())
+        header = ["No", "Nama Barang", "Satuan", "Harga Satuan", "Qty Total"]
         self.assertEqual(
-            {v.po_prefix for v in self.db.list_vehicles(self.pid, vixion.id)},
-            {"VXN-"},
+            profile.fingerprint(header), loaded.fingerprint(header)
         )
-        # Jenis lain tidak ikut berubah.
-        self.assertTrue(
-            all(
-                v.po_prefix == ""
-                for t in types[1:]
-                for v in self.db.list_vehicles(self.pid, t.id)
-            )
+        # Fingerprint berubah bila bentuk header berbeda.
+        self.assertNotEqual(
+            profile.fingerprint(header),
+            profile.fingerprint(["No", "Uraian", "Satuan"]),
         )
 
-        # Invoice unit pertama memakai prefix jenis tersebut.
-        term = self.db.list_terms(self.pid)[0]
-        item = self.db.list_items(self.pid, vixion.id)[0]
-        vehicle = self.db.list_vehicles(self.pid, vixion.id)[0]
-        self.db.set_allocation(term.id, item.id, vehicle.id, 1)
-        invoice = build_invoice_data(
-            self.db, self.db.get_project(self.pid), term, vehicle
+    def test_export_uses_profile_layout(self):
+        """Baris header hasil export mengikuti template, bukan angka hardcode."""
+        import openpyxl
+
+        from app.services.template_profile import profile_for_template
+
+        profile = profile_for_template(TEMPLATE)
+        invoice = InvoiceData(
+            label="Uji",
+            client_name="Klien",
+            client_address="Alamat",
+            company_name="CV. PANJI PERKASA",
+            company_address="Bandung",
+            po_number="PO-1",
+            invoice_date=__import__("datetime").date(2026, 7, 1),
+            lines=[InvoiceLine("Service", 2, 100_000)],
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = export_invoices(TEMPLATE, [invoice], tmp, mode="files")
+            wb = openpyxl.load_workbook(paths[0], data_only=False)
+            ws = wb.worksheets[0]
+            header = profile.header_row
+            self.assertEqual(ws.cell(row=header, column=1).value, "Qty")
+            self.assertEqual(ws.cell(row=header, column=2).value, "Nama Barang")
+            first = header + 1
+            self.assertEqual(ws.cell(row=first, column=1).value, 2)
+            self.assertEqual(ws.cell(row=first, column=2).value, "Service")
+            self.assertEqual(ws.cell(row=first, column=4).value, 200_000)
+            # Sub Total at first+1, TOTAL at first+2 (diskon row removed)
+            self.assertEqual(ws.cell(row=first + 1, column=3).value, "Sub Total")
+            self.assertEqual(ws.cell(row=first + 2, column=3).value, "TOTAL")
+            wb.close()
+
+
+class InvoiceNettoTests(unittest.TestCase):
+    """Invoice 1:1 netto menggunakan build_invoice_netto() tanpa termin."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db = Database(Path(self.tmp.name) / "test.db")
+        self.pid = self.db.create_project(
+            "Proyek Uji Netto", client_name="POLRESTA", client_address="Bandung"
+        )
+
+    def tearDown(self):
+        self.db.close()
+        self.tmp.cleanup()
+
+    def _item(self, name: str, qty: int, price: int) -> Item:
+        return Item(
+            id=0,
+            project_id=self.pid,
+            row_no=0,
+            name=name,
+            unit="unit",
+            unit_price=price,
+            total_qty=qty,
+        )
+
+    def test_mapping_passthrough(self):
+        items = [self._item("Service", 3, 240_000)]
+        project = self.db.get_project(self.pid)
+        invoice = build_invoice_netto(
+            project, items, label="Vixion"
         )
         self.assertIsNotNone(invoice)
-        self.assertEqual(invoice.po_number, f"VXN-{vehicle.display_name}")
+        self.assertEqual(len(invoice.lines), 1)
+        line = invoice.lines[0]
+        self.assertEqual(line.name, "Service")
+        self.assertEqual(line.qty, 3)
+        self.assertEqual(line.unit_price, 240_000)
+        self.assertEqual(line.amount, 720_000)
+        self.assertEqual(invoice.total, 720_000)
+        self.assertEqual(invoice.po_number, "Vixion")
+        self.assertEqual(invoice.label, "Vixion")
+        self.assertEqual(invoice.client_name, "POLRESTA")
+
+    def test_multiple_items(self):
+        items = [
+            self._item("Oli", 6, 100_000),
+            self._item("Kampas", 2, 150_000),
+            self._item("Busi", 3, 50_000),
+        ]
+        project = self.db.get_project(self.pid)
+        invoice = build_invoice_netto(project, items)
+        self.assertIsNotNone(invoice)
+        self.assertEqual(len(invoice.lines), 3)
+        self.assertEqual(invoice.total, 1_050_000)
+        self.assertEqual(invoice.lines[0].amount, 600_000)
+        self.assertEqual(invoice.lines[1].amount, 300_000)
+        self.assertEqual(invoice.lines[2].amount, 150_000)
+
+    def test_skip_empty_name(self):
+        items = [
+            self._item("Service", 5, 240_000),
+            Item(
+                id=0,
+                project_id=self.pid,
+                row_no=0,
+                name="",
+                unit="unit",
+                unit_price=100_000,
+                total_qty=2,
+            ),
+            self._item("Oli", 3, 100_000),
+        ]
+        project = self.db.get_project(self.pid)
+        invoice = build_invoice_netto(project, items)
+        self.assertIsNotNone(invoice)
+        self.assertEqual(len(invoice.lines), 2)
+        self.assertEqual(invoice.lines[0].name, "Service")
+        self.assertEqual(invoice.lines[1].name, "Oli")
+
+    def test_no_items(self):
+        items = []
+        project = self.db.get_project(self.pid)
+        invoice = build_invoice_netto(project, items)
+        self.assertIsNone(invoice)
 
 
 class InvoiceExportTests(unittest.TestCase):
@@ -285,8 +463,7 @@ class InvoiceExportTests(unittest.TestCase):
             InvoiceLine(f"Barang {i}", i, 10_000) for i in range(1, 16)
         ]
         invoice = InvoiceData(
-            plate="D 1001 ABC",
-            vehicle_type="Yamaha Vixion",
+            label="D 1001 ABC",
             client_name="POLRESTA BANDUNG",
             client_address="JL BHAYANGKARA NO.1",
             company_name="CV. PANJI PERKASA",
@@ -295,8 +472,6 @@ class InvoiceExportTests(unittest.TestCase):
             invoice_date=__import__("datetime").date(2026, 7, 1),
             invoice_date_text="1 Juli 2026",
             lines=lines,
-            discount_percent=10,
-            term_name="Termin 1",
         )
         with tempfile.TemporaryDirectory() as tmp:
             paths = export_invoices(TEMPLATE, [invoice], tmp, mode="files")
@@ -317,16 +492,16 @@ class InvoiceExportTests(unittest.TestCase):
             subtotal_row = 26
             self.assertEqual(ws[f"C{subtotal_row}"].value, "Sub Total")
             self.assertEqual(ws[f"D{subtotal_row}"].value, 1_200_000)
-            self.assertEqual(ws[f"D{subtotal_row + 1}"].value, 10)
-            self.assertEqual(ws[f"D{subtotal_row + 2}"].value, 1_080_000)
-            self.assertEqual(ws["C31"].value, "Hormat Kami,")
-            self.assertEqual(ws["C34"].value, "CV. PANJI PERKASA")
+            # Total row is subtotal+1 (no discount row)
+            self.assertEqual(ws[f"C{subtotal_row + 1}"].value, "TOTAL")
+            self.assertEqual(ws[f"D{subtotal_row + 1}"].value, 1_200_000)
+            self.assertEqual(ws["C30"].value, "Hormat Kami,")
+            self.assertEqual(ws["C33"].value, "CV. PANJI PERKASA")
             wb.close()
 
     def test_build_invoice_short(self):
         invoice = InvoiceData(
-            plate="D 2 B",
-            vehicle_type="Vixion",
+            label="D 2 B",
             client_name="Klien",
             client_address="Alamat",
             company_name="CV. PANJI PERKASA",
@@ -334,7 +509,6 @@ class InvoiceExportTests(unittest.TestCase):
             po_number="VXN-D 2 B",
             invoice_date=__import__("datetime").date(2026, 7, 1),
             lines=[InvoiceLine("Service", 1, 250_000)],
-            term_name="Termin 2",
         )
         with tempfile.TemporaryDirectory() as tmp:
             paths = export_invoices(TEMPLATE, [invoice], tmp, mode="files")
@@ -345,86 +519,68 @@ class InvoiceExportTests(unittest.TestCase):
             self.assertEqual(ws["A11"].value, 1)
             self.assertEqual(ws["D11"].value, 250_000)
             self.assertEqual(ws["D12"].value, 250_000)  # sub total
-            self.assertEqual(ws["C14"].value, "TOTAL")
-            self.assertEqual(ws["C17"].value, "Hormat Kami,")
+            self.assertEqual(ws["C13"].value, "TOTAL")
+            self.assertEqual(ws["C16"].value, "Hormat Kami,")
             wb.close()
 
 
-    def test_workbook_has_rekap_first_sheet(self):
-        import datetime
+class MultiTerminTemplateTests(unittest.TestCase):
+    """Tiga layout RAB dengan posisi header berbeda dalam satu workbook.
 
+    Kolom termin harus diabaikan: qty invoice diambil dari blok
+    'SESUAI PELAKSANAAN' (volume total), bukan dari kolom termin.
+    """
+
+    SAMPLE = ROOT / "sample" / "Template_RAB_Multi_Termin.xlsx"
+
+    def setUp(self):
+        if not self.SAMPLE.exists():
+            self.skipTest(f"file contoh tidak ada: {self.SAMPLE}")
         import openpyxl
 
-        def make_invoice(plate, vehicle_type, po_number):
-            return InvoiceData(
-                plate=plate,
-                vehicle_type=vehicle_type,
-                client_name="Klien",
-                client_address="Alamat",
-                company_name="CV. PANJI PERKASA",
-                company_address="Bandung",
-                po_number=po_number,
-                invoice_date=datetime.date(2026, 7, 1),
-                invoice_date_text="1 Juli 2026",
-                lines=[InvoiceLine("Service", 1, 250_000)],
-                term_name="Termin 1",
-                project_name="R2 Lantas",
-            )
+        self.wb = openpyxl.load_workbook(str(self.SAMPLE), data_only=True)
 
-        invoices = [
-            make_invoice("D 1 A", "Yamaha Vixion", "VXN-D 1 A"),
-            make_invoice("D 2 B", "Suzuki Hayate", "HYT-D 2 B"),
-        ]
-        with tempfile.TemporaryDirectory() as tmp:
-            paths = export_invoices(TEMPLATE, invoices, tmp, mode="workbook")
-            self.assertEqual(len(paths), 1)
-            wb = openpyxl.load_workbook(paths[0])
-            # Rekap di posisi pertama.
-            self.assertEqual(wb.sheetnames[0], "Rekap")
-            # Sheet pivot qty satu per jenis kendaraan, setelah rekap.
-            pivot_names = [s for s in wb.sheetnames if s.startswith("Pivot Qty -")]
-            self.assertEqual(len(pivot_names), 2)
-            self.assertIn("Pivot Qty - Yamaha Vixion", wb.sheetnames)
-            self.assertIn("Pivot Qty - Suzuki Hayate", wb.sheetnames)
-            # Jumlah sheet: rekap + pivot per jenis + invoice per kendaraan.
-            self.assertEqual(len(wb.sheetnames), 1 + len(pivot_names) + len(invoices))
-            ws = wb["Rekap"]
-            self.assertEqual(ws["A1"].value, "REKAP R2 Lantas (Termin 1)")
-            self.assertEqual(ws["A2"].value, "No")
-            self.assertEqual(ws["B2"].value, "Sheet Invoice")
-            self.assertEqual(ws["C2"].value, "No PO")
-            self.assertEqual(ws["D2"].value, "Tanggal")
-            self.assertEqual(ws["E2"].value, "No Kendaraan")
-            self.assertEqual(ws["F2"].value, "Tipe Kendaraan")
-            self.assertEqual(ws["G2"].value, "Jumlah (Rp.)")
-            self.assertEqual(ws["B3"].value, "VXN-D 1 A")
-            self.assertEqual(ws["C3"].value, "VXN-D 1 A")
-            self.assertEqual(ws["D3"].value, "Jul-26")
-            self.assertEqual(ws["E3"].value, "D 1 A")
-            self.assertEqual(ws["F3"].value, "Yamaha Vixion")
-            self.assertEqual(ws["G3"].value, 250000.0)
-            self.assertEqual(ws["B4"].value, "HYT-D 2 B")
-            self.assertEqual(ws["G4"].value, 250000.0)
-            self.assertEqual(ws["B5"].value, "GRAND TOTAL")
-            self.assertEqual(ws["G5"].value, 500000.0)
-            # Header berwarna merah (C00000) dengan teks putih.
-            self.assertEqual(ws["A2"].fill.fgColor.rgb, "00C00000")
-            self.assertEqual(ws["A2"].font.color.rgb, "00FFFFFF")
-            # Pivot sheet: tidak ada harga satuan / total harga.
-            ws_pivot = wb["Pivot Qty - Yamaha Vixion"]
-            self.assertEqual(ws_pivot["A1"].value, "Pivot Qty - Yamaha Vixion")
-            self.assertEqual(ws_pivot["A3"].value, "Termin")
-            self.assertEqual(ws_pivot["B3"].value, "Jenis Kendaraan")
-            self.assertEqual(ws_pivot["C3"].value, "Nama Barang")
-            self.assertEqual(ws_pivot["D3"].value, "-D 1 A")
-            self.assertEqual(ws_pivot["E3"].value, "Total Qty")
-            # Data: qty per kolom kendaraan, total di kolom ujung.
-            self.assertEqual(ws_pivot["A4"].value, "Termin 1")
-            self.assertEqual(ws_pivot["B4"].value, "Yamaha Vixion")
-            self.assertEqual(ws_pivot["C4"].value, "Service")
-            self.assertEqual(ws_pivot["D4"].value, 1)
-            self.assertEqual(ws_pivot["E4"].value, 1)
-            wb.close()
+    def tearDown(self):
+        self.wb.close()
+
+    def _parse(self, sheet, header_row):
+        ws = self.wb[sheet]
+        row, columns = detect_best_header(ws)
+        self.assertEqual(row, header_row, f"header {sheet} harus di baris {header_row}")
+        return parse_rab(str(self.SAMPLE), RabMapping(sheet, row, columns))
+
+    def test_two_terms_header_row_1(self):
+        result = self._parse("2_Termin_Header_Baris_1", 2)
+        self.assertEqual(len(result.items), 7)
+        first = result.items[0]
+        self.assertEqual(first.name, "Item Pekerjaan / Jasa Utama 1")
+        self.assertEqual(first.unit, "UNIT")
+        self.assertEqual(first.unit_price, 250_000)
+        self.assertEqual(first.total_qty, 6)
+        self.assertEqual(result.term_names, ["Termin 1", "Termin 2"])
+
+    def test_four_terms_header_row_2(self):
+        result = self._parse("4_Termin_Header_Baris_2", 3)
+        self.assertEqual(len(result.items), 7)
+        self.assertEqual(result.items[0].total_qty, 6)
+        self.assertEqual(result.items[2].unit_price, 150_000)
+
+    def test_percentage_header_row_3(self):
+        result = self._parse("Persentase_Header_Baris_3", 4)
+        self.assertEqual(len(result.items), 4)
+        self.assertEqual(result.items[0].name, "Pekerjaan Persiapan & Mobilisasi")
+        self.assertEqual(result.items[0].unit, "LS")
+        self.assertEqual(result.items[0].total_qty, 1)
+        self.assertEqual(result.items[1].unit_price, 1_800_000)
+
+    def test_summary_rows_are_not_items(self):
+        result = self._parse("2_Termin_Header_Baris_1", 2)
+        names = [item.name.lower() for item in result.items]
+        for forbidden in ("jumlah", "total", "rekap", "ppn", "grand total"):
+            self.assertFalse(
+                any(name.startswith(forbidden) for name in names),
+                f"baris rekap '{forbidden}' tidak boleh jadi item",
+            )
 
 
 if __name__ == "__main__":

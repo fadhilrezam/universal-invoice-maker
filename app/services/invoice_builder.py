@@ -1,63 +1,61 @@
+"""Pembangun data invoice 1:1 (netto)."""
 from __future__ import annotations
 
-from pathlib import Path
+from datetime import date
+from typing import Sequence
 
-from ..db import Database
-from ..models import Item, Project, Term, Vehicle
+from ..models import Item, Project
 from ..utils import format_date_id, format_rupiah
 from .invoice_export import InvoiceData, InvoiceLine
 
 
-def build_invoice_data(
-    db: Database,
+def build_invoice_netto(
     project: Project,
-    term: Term,
-    vehicle: Vehicle,
-    items: list[Item] | None = None,
+    items: Sequence[Item],
+    *,
     company_name: str = "",
     company_address: str = "",
-    template_path: str | Path = "",
+    label: str = "",
+    po_number: str = "",
+    invoice_date: date | None = None,
+    date_format: str = "",
 ) -> InvoiceData | None:
-    if items is None:
-        items = db.list_items(project.id, vehicle.vehicle_type_id)
-    allocations = db.get_term_allocations(term.id)
-    lines: list[InvoiceLine] = []
-    for item in items:
-        qty = allocations.get((item.id, vehicle.id), 0)
-        if qty > 0:
-            lines.append(
-                InvoiceLine(name=item.name, qty=qty, unit_price=item.unit_price)
-            )
+    """Invoice 1:1 tanpa termin dan tanpa pengelompokan.
+
+    Satu baris RAB menjadi tepat satu baris invoice: qty diambil apa adanya
+    dari ``item.total_qty`` (kolom volume pada blok "sesuai pelaksanaan"),
+    harga dari ``item.unit_price``. Tidak ada agregasi, pemecahan qty, atau
+    perhitungan PPN — nilai invoice adalah nilai akhir (netto).
+    """
+    lines = [
+        InvoiceLine(
+            name=item.name.strip(),
+            qty=int(item.total_qty),
+            unit_price=int(item.unit_price),
+        )
+        for item in items
+        if (item.name or "").strip()
+    ]
     if not lines:
         return None
 
-    invoice_date = term.date_obj or project.date_obj
-    date_format = term.date_format or project.date_format or "full"
-    invoice_date_text = format_date_id(invoice_date, date_format)
-    label = vehicle.plate or vehicle.display_name
-    po_prefix = vehicle.po_prefix or project.po_prefix or ""
-    po_number = f"{po_prefix}{label}"
-    vehicle_type = vehicle.type_name or vehicle.vehicle_type or project.vehicle_type
+    label = (label or "").strip() or project.name
+    date_value = invoice_date or project.date_obj
+    fmt = date_format or project.date_format or "full"
+    po = (po_number or "").strip() or f"{project.po_prefix}{label}"
     return InvoiceData(
-        plate=vehicle.plate,
         label=label,
-        vehicle_type=vehicle_type,
         client_name=project.client_name,
         client_address=project.client_address,
         company_name=company_name,
         company_address=company_address,
-        po_number=po_number,
-        invoice_date=invoice_date,
-        invoice_date_text=invoice_date_text,
+        po_number=po,
+        invoice_date=date_value,
+        invoice_date_text=format_date_id(date_value, fmt),
         lines=lines,
-        discount_percent=term.discount_percent,
-        term_name=term.name,
         project_name=project.name,
     )
 
 
 def invoice_summary_text(invoice: InvoiceData) -> str:
-    return (
-        f"{invoice.label or invoice.plate}: {len(invoice.lines)} item, "
-        f"total {format_rupiah(invoice.total)}"
-    )
+    return f"{invoice.label}: {len(invoice.lines)} item, total {format_rupiah(invoice.total)}"

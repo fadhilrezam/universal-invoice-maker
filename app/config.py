@@ -6,13 +6,19 @@ import shutil
 import sys
 from pathlib import Path
 
-APP_NAME = "InvoiceAutomation"
-APP_TITLE = "Invoice Automation - Pembagian RAB ke Kendaraan"
+APP_NAME = "UniversalInvoiceMaker"
+APP_TITLE = "Universal Invoice Maker"
 
 
 def app_data_dir() -> Path:
-    """Folder data aplikasi. Bisa dioverride lewat env INVOICE_APP_DATA."""
-    override = os.environ.get("INVOICE_APP_DATA")
+    """Folder data aplikasi.
+
+    Bisa dioverride lewat env ``UNIVERSAL_INVOICE_APP_DATA`` (nama lama
+    ``INVOICE_APP_DATA`` tetap diterima agar skrip lama tidak rusak).
+    """
+    override = os.environ.get("UNIVERSAL_INVOICE_APP_DATA") or os.environ.get(
+        "INVOICE_APP_DATA"
+    )
     if override:
         path = Path(override).expanduser()
     elif sys.platform == "win32":

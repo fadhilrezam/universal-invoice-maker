@@ -7,10 +7,10 @@ echo Membersihkan build lama...
 if exist build rmdir /s /q build
 if exist dist rmdir /s /q dist
 echo Membangun EXE...
-python -m PyInstaller --noconfirm --clean invoice_automation.spec
+python -m PyInstaller --noconfirm --clean universal_invoice_maker.spec
 if errorlevel 1 goto :error
 echo.
-echo Selesai. File EXE ada di dist\InvoiceAutomation.exe
+echo Selesai. File EXE ada di dist\UniversalInvoiceMaker.exe
 pause
 exit /b 0
 

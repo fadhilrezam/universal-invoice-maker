@@ -26,9 +26,8 @@ from ..config import APP_TITLE, db_path
 from ..db import Database
 from ..models import Project
 from ..utils import format_date_id
-from .allocation_tab import AllocationTab
 from .dialogs_misc import HelpDialog, LogDialog, SettingsDialog
-from .export_tab import ExportTab
+from .invoice_tab import InvoiceTab
 from .project_tab import ProjectTab
 from .style import app_icon
 from .widgets import button, heading, muted
@@ -51,7 +50,7 @@ class NewProjectDialog(QDialog):
         form = QFormLayout()
         form.setSpacing(10)
         self.name_edit = QLineEdit()
-        self.name_edit.setPlaceholderText("mis. Pemeliharaan Kendaraan Dinas 2026")
+        self.name_edit.setPlaceholderText("mis. Pengadaan Alat Tulis 2026")
         self.client_edit = QLineEdit()
         self.client_edit.setPlaceholderText("mis. POLRESTA BANDUNG")
         form.addRow("Nama proyek", self.name_edit)
@@ -116,7 +115,7 @@ class MainWindow(QMainWindow):
             "font-size: 18pt; font-weight: 800; color: #B03A2E; letter-spacing: 2px;"
         )
         side.addWidget(brand)
-        tagline = muted("Pembagian RAB ke kendaraan")
+        tagline = muted("RAB Excel → invoice 1:1")
         tagline.setStyleSheet("color: #64748B; margin-bottom: 4px;")
         side.addWidget(tagline)
 
@@ -159,8 +158,9 @@ class MainWindow(QMainWindow):
         empty_title.setAlignment(Qt.AlignCenter)
         empty_layout.addWidget(empty_title)
         empty_text = muted(
-            "Satu proyek berisi satu RAB, satu daftar kendaraan, dan beberapa termin.\n"
-            "Setelah proyek dibuat, import RAB dan daftar kendaraan dari Excel."
+            "Satu proyek berisi satu RAB Excel.\n"
+            "Setelah proyek dibuat, import RAB di tab Data Proyek lalu export "
+            "invoice 1:1 di tab Invoice 1:1."
         )
         empty_text.setAlignment(Qt.AlignCenter)
         empty_text.setWordWrap(True)
@@ -177,15 +177,12 @@ class MainWindow(QMainWindow):
 
         self.tabs = QTabWidget()
         self.project_tab = ProjectTab(self.db)
-        self.allocation_tab = AllocationTab(self.db)
-        self.export_tab = ExportTab(self.db)
+        self.invoice_tab = InvoiceTab(self.db)
         self.tabs.addTab(self.project_tab, "1. Data Proyek")
-        self.tabs.addTab(self.allocation_tab, "2. Alokasi Termin")
-        self.tabs.addTab(self.export_tab, "3. Export Invoice")
+        self.tabs.addTab(self.invoice_tab, "2. Invoice 1:1")
         self.stack.addWidget(self.tabs)
 
         self.project_tab.data_changed.connect(self._data_changed)
-        self.allocation_tab.data_changed.connect(self._allocation_changed)
         self.tabs.currentChanged.connect(self._tab_changed)
         layout.addWidget(content, 1)
 
@@ -269,13 +266,10 @@ class MainWindow(QMainWindow):
         bits = []
         if project.client_name:
             bits.append(project.client_name)
-        if project.vehicle_type:
-            bits.append(project.vehicle_type)
         self.project_badge.setText("  •  ".join(bits))
         self.project_badge.setStyleSheet("color: #64748B;")
         self.project_tab.set_project(project)
-        self.allocation_tab.set_project(project)
-        self.export_tab.set_project(project)
+        self.invoice_tab.set_project(project)
         self.stack.setCurrentWidget(self.tabs)
 
     def _data_changed(self) -> None:
@@ -292,22 +286,13 @@ class MainWindow(QMainWindow):
                 break
         self.project_title.setText(project.name)
         self.project_tab.set_project(project)
-        self.allocation_tab.set_project(project)
-        self.export_tab.set_project(project)
-
-    def _allocation_changed(self) -> None:
-        if not self.project:
-            return
-        self.project_tab.refresh()
-        self.export_tab.refresh()
+        self.invoice_tab.set_project(project)
 
     def _tab_changed(self, index: int) -> None:
         if not self.project:
             return
         if index == 1:
-            self.allocation_tab.refresh()
-        elif index == 2:
-            self.export_tab.refresh()
+            self.invoice_tab.refresh()
 
     # --------------------------------------------------------------- actions
     def new_project(self) -> None:
@@ -327,8 +312,8 @@ class MainWindow(QMainWindow):
         answer = QMessageBox.question(
             self,
             "Hapus proyek",
-            f"Hapus proyek '{self.project.name}' beserta seluruh RAB, termin, "
-            "alokasi, dan riwayatnya? Tindakan ini tidak bisa dibatalkan.",
+            f"Hapus proyek '{self.project.name}' beserta seluruh RAB dan "
+            "riwayatnya? Tindakan ini tidak bisa dibatalkan.",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
         )
@@ -337,14 +322,13 @@ class MainWindow(QMainWindow):
         self.db.delete_project(self.project.id)
         self.project = None
         self.project_tab.set_project(None)
-        self.allocation_tab.set_project(None)
-        self.export_tab.set_project(None)
+        self.invoice_tab.set_project(None)
         self.refresh_projects(select_id=-1)
 
     def open_settings(self) -> None:
         dialog = SettingsDialog(self.db, self)
         if dialog.exec() == QDialog.Accepted and dialog.saved:
-            self.export_tab.refresh()
+            self.invoice_tab.refresh()
 
     def open_log(self) -> None:
         if not self.project:
@@ -358,10 +342,10 @@ class MainWindow(QMainWindow):
     def open_about(self) -> None:
         QMessageBox.about(
             self,
-            "Tentang Invoice Automation",
-            "<h3>Invoice Automation 1.0</h3>"
-            "<p>Aplikasi lokal untuk membagi qty RAB ke kendaraan per termin "
-            "dan mengekspor invoice Excel sesuai template.</p>"
+            "Tentang Universal Invoice Maker",
+            "<h3>Universal Invoice Maker 1.0</h3>"
+            "<p>Aplikasi lokal untuk memetakan isi RAB Excel menjadi invoice "
+            "satu banding satu. Nilai invoice netto; pajak diurus pengguna.</p>"
             "<p>Python + PySide6 + openpyxl + SQLite.</p>"
-            "<p>Data tersimpan di:<br><code>%APPDATA%\\InvoiceAutomation\\data.db</code></p>",
+            "<p>Data tersimpan di:<br><code>%APPDATA%\\UniversalInvoiceMaker\\data.db</code></p>",
         )
